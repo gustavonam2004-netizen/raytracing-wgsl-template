@@ -151,57 +151,304 @@ fn envoriment_color(direction: vec3f, color1: vec3f, color2: vec3f) -> vec3f
   return col;
 }
 
-fn check_ray_collision(r: ray, max: f32) -> hit_record
+fn check_ray_collision(r: ray, max_t: f32) -> hit_record
 {
-  var spheresCount = i32(uniforms[19]);
-  var quadsCount = i32(uniforms[20]);
-  var boxesCount = i32(uniforms[21]);
-  var trianglesCount = i32(uniforms[22]);
-  var meshCount = i32(uniforms[27]);
+  let spheres_count = i32(uniforms[19]);
+  let quads_count = i32(uniforms[20]);
+  let boxes_count = i32(uniforms[21]);
 
-  var record = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
-  var closest = record;
+  var closest = hit_record(
+    min(max_t, RAY_TMAX),
+    vec3f(0.0),
+    vec3f(0.0),
+    vec4f(0.0),
+    vec4f(0.0),
+    false,
+    false
+  );
+
+  // Esferas
+  for (var i = 0; i < spheres_count; i = i + 1) {
+    var candidate = hit_record(
+      closest.t,
+      vec3f(0.0),
+      vec3f(0.0),
+      vec4f(0.0),
+      vec4f(0.0),
+      false,
+      false
+    );
+
+    let sphere = spheresb[i];
+
+    hit_sphere(
+      sphere.transform.xyz,
+      sphere.transform.w,
+      r,
+      &candidate,
+      closest.t
+    );
+
+    if (candidate.hit_anything) {
+      candidate.object_color = sphere.color;
+      candidate.object_material = sphere.material;
+      closest = candidate;
+    }
+  }
+
+  // Quads
+  for (var i = 0; i < quads_count; i = i + 1) {
+    var candidate = hit_record(
+      closest.t,
+      vec3f(0.0),
+      vec3f(0.0),
+      vec4f(0.0),
+      vec4f(0.0),
+      false,
+      false
+    );
+
+    let quad = quadsb[i];
+
+    hit_quad(
+      r,
+      quad.Q,
+      quad.u,
+      quad.v,
+      &candidate,
+      closest.t
+    );
+
+    if (candidate.hit_anything) {
+      candidate.frontface = dot(r.direction, candidate.normal) < 0.0;
+      candidate.object_color = quad.color;
+      candidate.object_material = quad.material;
+      closest = candidate;
+    }
+  }
+
+  // Caixas alinhadas aos eixos
+  for (var i = 0; i < boxes_count; i = i + 1) {
+    var candidate = hit_record(
+      closest.t,
+      vec3f(0.0),
+      vec3f(0.0),
+      vec4f(0.0),
+      vec4f(0.0),
+      false,
+      false
+    );
+
+    let box_object = boxesb[i];
+
+    hit_box(
+      r,
+      box_object.center.xyz,
+      box_object.radius.xyz,
+      &candidate,
+      closest.t
+    );
+
+    if (candidate.hit_anything) {
+      candidate.frontface = dot(r.direction, candidate.normal) < 0.0;
+      candidate.object_color = box_object.color;
+      candidate.object_material = box_object.material;
+      closest = candidate;
+    }
+  }
 
   return closest;
 }
 
-fn lambertian(normal : vec3f, absorption: f32, random_sphere: vec3f, rng_state: ptr<function, u32>) -> material_behaviour
+fn lambertian(
+  normal: vec3f,
+  absorption: f32,
+  random_sphere: vec3f,
+  rng_state: ptr<function, u32>
+) -> material_behaviour
 {
-  return material_behaviour(true, vec3f(0.0));
+  var direction = normal + random_sphere;
+
+  // Evita uma direção quase nula.
+  if (length(direction) < 0.0001) {
+    direction = normal;
+  }
+
+  return material_behaviour(true, normalize(direction));
 }
 
 fn metal(normal : vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> material_behaviour
 {
-  return material_behaviour(false, vec3f(0.0));
+  let reflected = reflect(normalize(direction), normal);
+
+  // fuzz = 0 dá um reflexo nítido.
+  // Valores maiores espalham o reflexo.
+  let fuzz_amount = clamp(fuzz, 0.0, 1.0);
+  var scattered = reflected + fuzz_amount * random_sphere;
+
+  if (length(scattered) < 0.0001) {
+    scattered = reflected;
+  }
+
+  scattered = normalize(scattered);
+
+  // Se a direção apontar para dentro da superfície, não há espalhamento.
+  let valid_scatter = dot(scattered, normal) > 0.0;
+
+  return material_behaviour(valid_scatter, scattered);
 }
 
 fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, random_sphere: vec3f, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
 {  
-  return material_behaviour(false, vec3f(0.0));
+  let unit_direction = normalize(r_direction);
+
+  // Ao entrar no material, o raio passa do ar para o vidro.
+  // Ao sair, a razão se inverte.
+  var eta = refraction_index;
+
+  if (frontface) {
+    eta = 1.0 / refraction_index;
+  }
+
+  let cos_theta = min(dot(-unit_direction, normal), 1.0);
+  let sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
+
+  // Reflexão total interna: o raio não consegue atravessar.
+  let cannot_refract = eta * sin_theta > 1.0;
+
+  // Aproximação de Schlick para a chance de reflexão.
+  let r0_base = (1.0 - refraction_index) / (1.0 + refraction_index);
+  let r0 = r0_base * r0_base;
+  let reflectance =
+    r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
+
+  var direction: vec3f;
+
+  if (cannot_refract || rng_next_float(rng_state) < reflectance) {
+    direction = reflect(unit_direction, normal);
+  } else {
+    // Lei de Snell: calcula a direção refratada.
+    let perpendicular =
+      eta * (unit_direction + cos_theta * normal);
+
+    let parallel =
+      -sqrt(max(0.0, 1.0 - dot(perpendicular, perpendicular))) * normal;
+
+    direction = perpendicular + parallel;
+  }
+
+  // Aplica uma pequena perturbação para vidro rugoso.
+  direction += clamp(fuzz, 0.0, 1.0) * random_sphere;
+
+  if (length(direction) < 0.0001) {
+    direction = normal;
+  }
+
+  return material_behaviour(true, normalize(direction));
 }
 
 fn emmisive(color: vec3f, light: f32) -> material_behaviour
 {
-  return material_behaviour(false, vec3f(0.0));
+  // Reutiliza direction para transportar a cor emitida
+  // até trace. Um material emissivo não espalha o raio.
+  return material_behaviour(false, color * light);
 }
 
 fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
 {
-  var maxbounces = i32(uniforms[2]);
-  var light = vec3f(0.0);
-  var color = vec3f(1.0);
-  var r_ = r;
-  
-  var backgroundcolor1 = int_to_rgb(i32(uniforms[11]));
-  var backgroundcolor2 = int_to_rgb(i32(uniforms[12]));
-  var behaviour = material_behaviour(true, vec3f(0.0));
+  let max_bounces = i32(uniforms[2]);
+  let background_color1 = int_to_rgb(i32(uniforms[11]));
+  let background_color2 = int_to_rgb(i32(uniforms[12]));
 
-  for (var j = 0; j < maxbounces; j = j + 1)
-  {
+  var current_ray = r;
+  var throughput = vec3f(1.0);
+  var accumulated_light = vec3f(0.0);
 
+  for (var bounce = 0; bounce < max_bounces; bounce = bounce + 1) {
+    let hit = check_ray_collision(current_ray, RAY_TMAX);
+
+    if (!hit.hit_anything) {
+      let sky = envoriment_color(
+        current_ray.direction,
+        background_color1,
+        background_color2
+      );
+
+      accumulated_light += throughput * sky;
+      break;
+    }
+
+    let random_direction = rng_next_vec3_in_unit_sphere(rng_state);
+    let material = hit.object_material;
+
+    var behaviour: material_behaviour;
+
+    if (material.w > 0.0) {
+      let emission = emmisive(hit.object_color.rgb, material.w);
+      accumulated_light += throughput * emission.direction;
+      break;
+    }
+
+    if (material.x < 0.0) {
+      behaviour = dielectric(
+        hit.normal,
+        current_ray.direction,
+        1.5,
+        hit.frontface,
+        random_direction,
+        material.y,
+        rng_state
+      );
+    }
+
+    else if (material.x > 0.0) {
+      behaviour = metal(
+        hit.normal,
+        current_ray.direction,
+        material.y,
+        random_direction
+      );
+    } else {
+      behaviour = lambertian(
+        hit.normal,
+        material.y,
+        random_direction,
+        rng_state
+      );
+    }
+
+    if (!behaviour.scatter) {
+      break;
+    }
+
+    // A cor do objeto atenua a luz que continuará pelo caminho.
+    let specular = clamp(material.z, 0.0, 1.0);
+    let surface_color = mix(
+      hit.object_color.rgb,
+      vec3f(1.0),
+      specular
+    );
+
+    if (material.x < 0.0) {
+      throughput *= hit.object_color.rgb;
+    } else {
+      let specular = clamp(material.z, 0.0, 1.0);
+      let surface_color = mix(
+        hit.object_color.rgb,
+        vec3f(1.0),
+        specular
+      );
+
+      throughput *= surface_color;
+    }
+
+    current_ray = ray(
+      hit.p + hit.normal * RAY_TMIN,
+      behaviour.direction
+    );
   }
 
-  return light;
+  return accumulated_light;
 }
 
 @compute @workgroup_size(THREAD_COUNT, THREAD_COUNT, 1)
@@ -225,21 +472,38 @@ fn render(@builtin(global_invocation_id) id : vec3u)
     var cam = get_camera(lookfrom, lookat, vec3(0.0, 1.0, 0.0), uniforms[10], 1.0, uniforms[6], uniforms[5]);
     var samples_per_pixel = i32(uniforms[4]);
 
-    var color = vec3(rng_next_float(&rng_state), rng_next_float(&rng_state), rng_next_float(&rng_state));
+    var color_sum = vec3f(0.0);
 
-    // Steps:
-    // 1. Loop for each sample per pixel
-    // 2. Get ray
-    // 3. Call trace function
-    // 4. Average the color
+    for (var sample_index = 0; sample_index < samples_per_pixel; sample_index = sample_index + 1) {
+      let sample_uv =
+        (fragCoord + sample_square(&rng_state)) / vec2f(rez);
 
-    var color_out = vec4(linear_to_gamma(color), 1.0);
-    var map_fb = mapfb(id.xy, rez);
-    
-    // 5. Accumulate the color
-    var should_accumulate = uniforms[3];
+      let camera_ray = get_ray(cam, sample_uv, &rng_state);
+      color_sum += trace(camera_ray, &rng_state);
+    }
 
-    // Set the color to the framebuffer
-    rtfb[map_fb] = color_out;
-    fb[map_fb] = color_out;
+    var color = color_sum / f32(max(samples_per_pixel, 1));
+    color = max(color, vec3f(0.0));
+
+    let pixel_index = mapfb(id.xy, f32(rez));
+
+    // A variável color ainda está em espaço linear aqui.
+    var average_color = color;
+    var sample_count = 1.0;
+
+    if (uniforms[3] > 0.5) {
+      let previous = rtfb[pixel_index];
+
+      if (previous.w > 0.0) {
+        sample_count = previous.w + 1.0;
+        average_color =
+          previous.rgb + (color - previous.rgb) / sample_count;
+      }
+    }
+
+    // Guarda a média linear e o número de quadros acumulados.
+    rtfb[pixel_index] = vec4f(average_color, sample_count);
+
+    // O buffer exibido recebe a cor com correção gamma.
+    fb[pixel_index] = vec4f(linear_to_gamma(average_color), 1.0);
 }

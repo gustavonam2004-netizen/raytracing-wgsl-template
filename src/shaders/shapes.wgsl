@@ -1,6 +1,47 @@
-fn hit_sphere(center: vec3f, radius: f32, r: ray, record: ptr<function, hit_record>, max: f32)
+fn hit_sphere(
+  center: vec3f,
+  radius: f32,
+  r: ray,
+  record: ptr<function, hit_record>,
+  max_t: f32
+)
 {
+  let oc = r.origin - center;
+  let a = dot(r.direction, r.direction);
+  let half_b = dot(oc, r.direction);
+  let c = dot(oc, oc) - radius * radius;
+  let discriminant = half_b * half_b - a * c;
 
+  if (discriminant < 0.0) {
+    record.hit_anything = false;
+    return;
+  }
+
+  let sqrt_discriminant = sqrt(discriminant);
+
+  // Tenta primeiro a interseção mais próxima.
+  var t = (-half_b - sqrt_discriminant) / a;
+
+  // Se estiver atrás do raio ou além do objeto mais próximo,
+  // tenta a outra interseção.
+  if (t < RAY_TMIN || t > max_t) {
+    t = (-half_b + sqrt_discriminant) / a;
+  }
+
+  if (t < RAY_TMIN || t > max_t) {
+    record.hit_anything = false;
+    return;
+  }
+
+  let point = ray_at(r, t);
+  let outward_normal = (point - center) / radius;
+  let frontface = dot(r.direction, outward_normal) < 0.0;
+
+  record.t = t;
+  record.p = point;
+  record.normal = select(-outward_normal, outward_normal, frontface);
+  record.frontface = frontface;
+  record.hit_anything = true;
 }
 
 fn hit_quad(r: ray, Q: vec4f, u: vec4f, v: vec4f, record: ptr<function, hit_record>, max: f32)
