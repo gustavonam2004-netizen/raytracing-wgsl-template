@@ -1,4 +1,6 @@
-## WGSL Raytracer Template
+## WGSL Raytracer 
+## Gustavo Sang Min Nam
+## Lucas Gomes Moreira
 Template básico de um Ray Tracer em WGSL (WEBGPU). Tudo o que precisa para fazer o projeto esta aqui.
 
 ### ⚠️ Atenção
