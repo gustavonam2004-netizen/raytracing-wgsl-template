@@ -518,7 +518,7 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
       behaviour = dielectric(
         hit.normal,
         current_ray.direction,
-        1.5,
+        0.9,
         hit.frontface,
         random_direction,
         material.y,
@@ -526,7 +526,7 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
       );
     }
 
-    else if (material.x > 0.0) {
+    else if (rng_next_float(rng_state) < clamp(material.z, 0.0, 1.0)) {
       behaviour = metal(
         hit.normal,
         current_ray.direction,
@@ -564,7 +564,7 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
         specular
       );
 
-      throughput *= surface_color;
+      throughput *= hit.object_color.rgb;
     }
 
     // Desloca a origem para o lado da superfície para onde o novo raio vai

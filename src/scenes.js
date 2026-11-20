@@ -1,7 +1,7 @@
 import { Sphere, Quad, Box, Mesh, Cylinder } from './objects.js';
 import { loadMesh, getObjBoundingBox, getSpheresRandom } from './util.js';
 
-const groundDefault = new Sphere([0, -1001, 0], [0.7, 0.7, 0.7], 1000, [0.9, 0.0, 0.6, 0.0]);
+const groundDefault = new Sphere([0, -1001, 0], [0.7, 0.7, 0.7], 1000, [0.0, 0.0, 0.0, 0.0]);
 
 async function getAvailableScene(index, scenesList)
 {
