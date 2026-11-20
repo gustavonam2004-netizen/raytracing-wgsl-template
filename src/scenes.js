@@ -1,4 +1,4 @@
-import { Sphere, Quad, Box, Mesh } from './objects.js';
+import { Sphere, Quad, Box, Mesh, Cylinder } from './objects.js';
 import { loadMesh, getObjBoundingBox, getSpheresRandom } from './util.js';
 
 const groundDefault = new Sphere([0, -1001, 0], [0.7, 0.7, 0.7], 1000, [0.9, 0.0, 0.6, 0.0]);
@@ -502,6 +502,70 @@ async function Everything()
         focusAngle: 0.0,
         sunIntensity: 1.0,
         samplesPerPixel: 1.0,
+        maxBounces: 10.0
+    };
+}
+
+// Cena nova (B+): uma "galeria" com o Bunny de vidro e a Suzanne dourada sobre
+// pedestais cilíndricos (nova primitiva), caixas rotacionadas e tubos de neon.
+async function Gallery()
+{
+    let spheres = [
+        new Sphere([0, -1001, 0], [0.35, 0.35, 0.4], 1000, [1.0, 0.15, 0.2, 0.0]),
+        new Sphere([0.0, -0.75, -2.2], [1.0, 0.85, 0.4], 0.25, [0.0, 0.0, 0.0, 4.0]),
+        new Sphere([-0.55, -0.85, -1.9], [0.9, 0.2, 0.3], 0.15, [0.0, 0.0, 0.0, 0.0]),
+        new Sphere([0.55, -0.85, -1.9], [0.8, 0.8, 0.9], 0.15, [-1.0, 0.0, 0.0, 0.0]),
+    ];
+
+    let boxes = [
+        // espelho inclinado ao fundo
+        new Box([0.0, 0.4, -4.6], [0.9, 0.9, 0.95], [0.0, 0.0, 0.15], [2.2, 1.4, 0.05], [1.0, 0.0, 1.0, 0.0]),
+        // cubos girados no chão
+        new Box([-1.9, -0.75, -2.4], [0.2, 0.5, 0.9], [0.3, 0.8, 0.2], [0.22, 0.22, 0.22], [0.0, 0.0, 0.0, 0.0]),
+        new Box([1.9, -0.7, -2.6], [0.9, 0.4, 0.1], [0.6, -0.5, 0.4], [0.25, 0.25, 0.25], [1.0, 0.1, 0.3, 0.0]),
+    ];
+
+    let cylinders = [
+        // pedestais
+        new Cylinder([-1.1, -0.65, -3.0], 0.45, 0.35, [0.0, 0.0, 0.0], [0.9, 0.9, 0.88], [0.0, 0.0, 0.0, 0.0]),
+        new Cylinder([1.1, -0.65, -3.0], 0.45, 0.35, [0.0, 0.0, 0.0], [0.9, 0.9, 0.88], [0.0, 0.0, 0.0, 0.0]),
+        // tubos de neon deitados e inclinados
+        new Cylinder([0.0, 1.4, -3.4], 0.05, 1.6, [0.0, 0.0, 1.5708], [0.3, 0.8, 1.0], [0.0, 0.0, 0.0, 5.0]),
+        new Cylinder([0.0, -0.95, -1.4], 0.04, 0.9, [0.0, 0.4, 1.5708], [1.0, 0.3, 0.8], [0.0, 0.0, 0.0, 4.0]),
+        // cilindro de vidro em pé
+        new Cylinder([0.0, -0.4, -3.6], 0.25, 0.6, [0.2, 0.0, 0.0], [0.7, 1.0, 0.8], [-1.0, 0.0, 0.0, 0.0]),
+    ];
+
+    let bunny = await loadMesh('./media/stanford-bunny.obj');
+    let suzanne = await loadMesh('./media/suzanne.obj');
+
+    // Os dois modelos dividem o mesmo buffer de triângulos (start/end).
+    let triangles = bunny.triangles.concat(suzanne.triangles);
+    let bunnyEnd = bunny.triangles.length;
+
+    let meshes = [
+        new Mesh([-1.1, -0.3, -3.0], [0.5, 0.5, 0.5], [0, 0.6, 0], [0.75, 0.95, 1.0, 1.0], [-1.0, 0.0, 0.0, 0.0], 0, 0, bunnyEnd),
+        new Mesh([1.1, 0.12, -3.0], [0.4, 0.4, 0.4], [0, -0.5, 0], [1.0, 0.75, 0.3, 1.0], [1.0, 0.05, 0.0, 0.0], 0, bunnyEnd, triangles.length),
+    ];
+
+    let bb = getObjBoundingBox(bunny.verticesMesh);
+    meshes[0].setBoundingBox(bb.min, bb.max);
+    bb = getObjBoundingBox(suzanne.verticesMesh);
+    meshes[1].setBoundingBox(bb.min, bb.max);
+
+    return {
+        spheres,
+        quads: [],
+        boxes,
+        triangles,
+        meshes,
+        cylinders,
+        backgroundColor1: [0.02, 0.02, 0.06],
+        backgroundColor2: [0.15, 0.12, 0.3],
+        focusDistance: 3.0,
+        focusAngle: 0.0,
+        sunIntensity: 0.3,
+        samplesPerPixel: 2.0,
         maxBounces: 10.0
     };
 }

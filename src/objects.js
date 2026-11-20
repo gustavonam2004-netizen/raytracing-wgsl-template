@@ -99,4 +99,24 @@ class Mesh
     }
 }
 
-export { Sphere, Quad, Box, Triangle, Mesh };
+// Nova primitiva: cilindro com tampas (eixo Y local), com rotação em euler.
+class Cylinder
+{
+    name = "Cylinder";
+    center = [0.0, 0.0, 0.0, 0.0]; // xyz = centro, w = raio
+    size = [0.0, 0.0, 0.0, 0.0];   // x = metade da altura
+    rotation = [0.0, 0.0, 0.0, 0.0];
+    color = [0.0, 0.0, 0.0, 0.0];
+    material = [0.0, 0.0, 0.0, 0.0];
+
+    constructor(center, radius, halfHeight, rotation, color, material)
+    {
+        this.center = [center[0], center[1], center[2], radius];
+        this.size = [halfHeight, 0.0, 0.0, 0.0];
+        this.rotation = [rotation[0], rotation[1], rotation[2], 0.0];
+        this.color = [color[0], color[1], color[2], 1.0];
+        this.material = material;
+    }
+}
+
+export { Sphere, Quad, Box, Triangle, Mesh, Cylinder };

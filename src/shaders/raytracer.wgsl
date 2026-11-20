@@ -29,6 +29,20 @@ const FRAC_2_PI = 1.5707964f;
 @group(2) @binding(4)
   var<storage, read_write> meshb : array<mesh>;
 
+// Nova primitiva: cilindro com tampas.
+// Fica no mesmo buffer das caixas (boxesb), logo depois delas, pois tem o
+// mesmo layout de 5 vec4 e o WebGPU limita a 8 storage buffers por shader.
+// center.xyz = centro, center.w = raio
+// size.x = metade da altura
+// rotation.xyz = rotação em euler (radianos)
+struct cylinder {
+  center : vec4f,
+  size : vec4f,
+  rotation : vec4f,
+  color : vec4f,
+  material : vec4f,
+};
+
 struct ray {
   origin : vec3f,
   direction : vec3f,
@@ -227,7 +241,7 @@ fn check_ray_collision(r: ray, max_t: f32) -> hit_record
     }
   }
 
-  // Caixas alinhadas aos eixos
+  // Caixas (com rotação)
   for (var i = 0; i < boxes_count; i = i + 1) {
     var candidate = hit_record(
       closest.t,
@@ -240,20 +254,131 @@ fn check_ray_collision(r: ray, max_t: f32) -> hit_record
     );
 
     let box_object = boxesb[i];
+    let center = box_object.center.xyz;
+
+    // Leva o raio para o espaço local da caixa (rotação inversa em torno
+    // do centro), testa contra a caixa alinhada e devolve a normal ao mundo.
+    // Convenção do template: o raio é girado pelo quaternion do euler
+    // (mundo -> local) e a normal volta pela inversa (local -> mundo).
+    let q_inv = quaternion_from_euler(box_object.rotation.xyz);
+    let q = q_inverse(q_inv);
+    let local_ray = rotate_ray_quaternion(r, center, q_inv);
 
     hit_box(
-      r,
-      box_object.center.xyz,
+      local_ray,
+      center,
       box_object.radius.xyz,
       &candidate,
       closest.t
     );
 
     if (candidate.hit_anything) {
-      candidate.frontface = dot(r.direction, candidate.normal) < 0.0;
+      // A rotação preserva o parâmetro t, então o ponto é calculado no mundo.
+      candidate.p = ray_at(r, candidate.t);
+      candidate.normal = normalize(rotate_vector(candidate.normal, q));
       candidate.object_color = box_object.color;
       candidate.object_material = box_object.material;
       closest = candidate;
+    }
+  }
+
+  // Cilindros (nova primitiva, com rotação)
+  let cylinders_count = i32(uniforms[28]);
+  for (var i = 0; i < cylinders_count; i = i + 1) {
+    var candidate = hit_record(
+      closest.t,
+      vec3f(0.0),
+      vec3f(0.0),
+      vec4f(0.0),
+      vec4f(0.0),
+      false,
+      false
+    );
+
+    let raw = boxesb[boxes_count + i];
+    let cyl = cylinder(raw.center, raw.radius, raw.rotation, raw.color, raw.material);
+    // Convenção do template: o raio é girado pelo quaternion do euler
+    // (mundo -> local) e a normal volta pela inversa (local -> mundo).
+    let q_inv = quaternion_from_euler(cyl.rotation.xyz);
+    let q = q_inverse(q_inv);
+
+    let local_ray = ray(
+      rotate_vector(r.origin - cyl.center.xyz, q_inv),
+      rotate_vector(r.direction, q_inv)
+    );
+
+    hit_cylinder(local_ray, cyl.center.w, cyl.size.x, &candidate, closest.t);
+
+    if (candidate.hit_anything) {
+      candidate.p = ray_at(r, candidate.t);
+      candidate.normal = normalize(rotate_vector(candidate.normal, q));
+      candidate.object_color = cyl.color;
+      candidate.object_material = cyl.material;
+      closest = candidate;
+    }
+  }
+
+  // Malhas de triângulos (Bunny, Suzanne)
+  let meshes_count = i32(uniforms[27]);
+  for (var m = 0; m < meshes_count; m = m + 1) {
+    let mesh_object = meshb[m];
+
+    let position = mesh_object.transform.xyz;
+    let scale = mesh_object.scale.xyz;
+    // Convenção do template: o raio é girado pelo quaternion do euler
+    // (mundo -> local) e a normal volta pela inversa (local -> mundo).
+    let q_inv = quaternion_from_euler(mesh_object.rotation.xyz);
+    let q = q_inverse(q_inv);
+
+    // Mundo -> local: translada, desfaz a rotação e desfaz a escala.
+    // A direção NÃO é normalizada, assim o t local é igual ao t do mundo.
+    let local_ray = ray(
+      rotate_vector(r.origin - position, q_inv) / scale,
+      rotate_vector(r.direction, q_inv) / scale
+    );
+
+    // Teste rápido contra a bounding box antes dos triângulos.
+    if (!AABB_intersect(local_ray, mesh_object.min.xyz, mesh_object.max.xyz)) {
+      continue;
+    }
+
+    var mesh_hit = false;
+    var mesh_record = closest;
+
+    let start = i32(mesh_object.start);
+    let end = i32(mesh_object.end);
+
+    for (var i = start; i < end; i = i + 1) {
+      var candidate = hit_record(
+        mesh_record.t,
+        vec3f(0.0),
+        vec3f(0.0),
+        vec4f(0.0),
+        vec4f(0.0),
+        false,
+        false
+      );
+
+      let tri = trianglesb[i];
+      hit_triangle(local_ray, tri.v0.xyz, tri.v1.xyz, tri.v2.xyz, &candidate, mesh_record.t);
+
+      if (candidate.hit_anything) {
+        mesh_record = candidate;
+        mesh_hit = true;
+      }
+    }
+
+    if (mesh_hit) {
+      // Normal local -> mundo: inversa-transposta da escala, depois rotação.
+      let world_normal = normalize(rotate_vector(mesh_record.normal / scale, q));
+      let frontface = dot(r.direction, world_normal) < 0.0;
+
+      mesh_record.p = ray_at(r, mesh_record.t);
+      mesh_record.normal = select(-world_normal, world_normal, frontface);
+      mesh_record.frontface = frontface;
+      mesh_record.object_color = mesh_object.color;
+      mesh_record.object_material = mesh_object.material;
+      closest = mesh_record;
     }
   }
 
@@ -442,8 +567,16 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
       throughput *= surface_color;
     }
 
+    // Desloca a origem para o lado da superfície para onde o novo raio vai
+    // (fora em reflexões, dentro em refrações), evitando auto-interseção.
+    let offset_normal = select(
+      -hit.normal,
+      hit.normal,
+      dot(behaviour.direction, hit.normal) > 0.0
+    );
+
     current_ray = ray(
-      hit.p + hit.normal * RAY_TMIN,
+      hit.p + offset_normal * 0.001,
       behaviour.direction
     );
   }

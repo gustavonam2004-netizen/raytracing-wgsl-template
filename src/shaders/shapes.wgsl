@@ -97,7 +97,15 @@ fn hit_triangle(r: ray, v0: vec3f, v1: vec3f, v2: vec3f, record: ptr<function, h
   var n = cross(v1v0, v2v0);
   var q = cross(rov0, r.direction);
 
-  var d = 1.0 / dot(r.direction, n);
+  // Raio paralelo ao triângulo: sem interseção (evita divisão por zero / NaN).
+  var denom = dot(r.direction, n);
+  if (abs(denom) < 1e-12)
+  {
+    record.hit_anything = false;
+    return;
+  }
+
+  var d = 1.0 / denom;
 
   var u = d * dot(-q, v2v0);
   var v = d * dot(q, v1v0);
@@ -139,7 +147,20 @@ fn hit_box(r: ray, center: vec3f, rad: vec3f, record: ptr<function, hit_record>,
     return;
   }
 
+  // Normal de entrada (aponta contra o raio).
   var t = tN;
+  var normal = -sign(r.direction) * step(t1.yzx, t1.xyz) * step(t1.zxy, t1.xyz);
+  var frontface = true;
+
+  // Origem dentro da caixa (ex.: raio refratado num vidro): usa a saída.
+  if (t < RAY_TMIN)
+  {
+    t = tF;
+    // Normal de saída (para fora), invertida para ficar contra o raio.
+    normal = -sign(r.direction) * step(t2.xyz, t2.yzx) * step(t2.xyz, t2.zxy);
+    frontface = false;
+  }
+
   if (t < RAY_TMIN || t > t_max)
   {
     record.hit_anything = false;
@@ -148,8 +169,78 @@ fn hit_box(r: ray, center: vec3f, rad: vec3f, record: ptr<function, hit_record>,
 
   record.t = t;
   record.p = ray_at(r, t);
-  record.normal = -sign(r.direction) * step(t1.yzx, t1.xyz) * step(t1.zxy, t1.xyz);
+  record.normal = normal;
+  record.frontface = frontface;
   record.hit_anything = true;
 
   return;
+}
+
+// Cilindro com tampas, alinhado ao eixo Y local, centrado na origem local.
+// radius = raio, half_height = metade da altura.
+fn hit_cylinder(r: ray, radius: f32, half_height: f32, record: ptr<function, hit_record>, t_max: f32)
+{
+  var best_t = t_max;
+  var best_normal = vec3f(0.0);
+  var found = false;
+
+  // Lateral: x^2 + z^2 = radius^2
+  let a = r.direction.x * r.direction.x + r.direction.z * r.direction.z;
+  let half_b = r.origin.x * r.direction.x + r.origin.z * r.direction.z;
+  let c = r.origin.x * r.origin.x + r.origin.z * r.origin.z - radius * radius;
+
+  if (a > 1e-8)
+  {
+    let disc = half_b * half_b - a * c;
+    if (disc >= 0.0)
+    {
+      let s = sqrt(disc);
+      for (var k = 0; k < 2; k = k + 1)
+      {
+        let t = select((-half_b + s) / a, (-half_b - s) / a, k == 0);
+        let y = r.origin.y + t * r.direction.y;
+        if (t > RAY_TMIN && t < best_t && abs(y) <= half_height)
+        {
+          let p = ray_at(r, t);
+          best_t = t;
+          best_normal = vec3f(p.x, 0.0, p.z) / radius;
+          found = true;
+        }
+      }
+    }
+  }
+
+  // Tampas: y = +-half_height
+  if (abs(r.direction.y) > 1e-8)
+  {
+    for (var k = 0; k < 2; k = k + 1)
+    {
+      let cap_y = select(-half_height, half_height, k == 0);
+      let t = (cap_y - r.origin.y) / r.direction.y;
+      if (t > RAY_TMIN && t < best_t)
+      {
+        let p = ray_at(r, t);
+        if (p.x * p.x + p.z * p.z <= radius * radius)
+        {
+          best_t = t;
+          best_normal = vec3f(0.0, sign(cap_y), 0.0);
+          found = true;
+        }
+      }
+    }
+  }
+
+  if (!found)
+  {
+    record.hit_anything = false;
+    return;
+  }
+
+  let frontface = dot(r.direction, best_normal) < 0.0;
+
+  record.t = best_t;
+  record.p = ray_at(r, best_t);
+  record.normal = select(-best_normal, best_normal, frontface);
+  record.frontface = frontface;
+  record.hit_anything = true;
 }

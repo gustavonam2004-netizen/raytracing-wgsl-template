@@ -1,5 +1,5 @@
 import { getGPU, getCanvas, getComputeBuffer, getComputeBufferLayout, getModule, getRenderPipeline, RGBToInt, timer, RGBToHex, crateAllScenesList } from "./src/util.js";
-import { Sphere, Quad, Box, Triangle, Mesh } from "./src/objects.js";
+import { Sphere, Quad, Box, Triangle, Mesh, Cylinder } from "./src/objects.js";
 import { getAvailableScene } from "./src/scenes.js";
 
 // arrays
@@ -8,20 +8,24 @@ let quads = [];
 let boxes = [];
 let triangles = [];
 let meshes = [];
+let cylinders = [];
 
 // variables and constants
 const THREAD_COUNT = 16;
 const MAX_SPHERES = 70;
 const MAX_QUADS = 10;
 const MAX_BOXES = 20;
-const MAX_TRIANGLES = 1000;
+const MAX_TRIANGLES = 2000;
 const MAX_MESHES = 3;
+const MAX_CYLINDERS = 20;
 
 let sphereTemplate = new Sphere([0.0, 0.1, -1.5], [0.4, 0.9, 0.8], 0.5, [0.0, 0.0, 0.0, 0.0]);
 let quadTemplate = new Quad([-1.0, -1.0, 0.0, 0.0], [0.0, 0.0, -2.0, 0.0], [0.0, 2.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]);
 let boxTemplate = new Box([0.0, 0.0, -2.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0], [0.5, 0.5, 0.5], [0.0, 0.0, 0.0, 0.0]);
 let triangleTemplate = new Triangle([0.0, 0.0, -2.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]);
 let meshTemplate = new Mesh([0.0, 0.0, -2.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], 0, 0, 0);
+
+let cylinderTemplate = new Cylinder([0.0, 0.0, -2.0], 0.3, 0.5, [0.0, 0.0, 0.0], [0.8, 0.3, 0.2], [0.0, 0.0, 0.0, 0.0]);
 
 let perfCount = 0;
 let cameraVelocity = [0.0, 0.0, 0.0];
@@ -58,6 +62,7 @@ const uniforms = {
     lookatz: -4, // 25
     debugShowLookAt: 0, // 26
     meshCount: meshes.length, // 27
+    cylinderCount: cylinders.length, // 28
 }
 
 const uniformsCount = Object.keys(uniforms).length;
@@ -83,13 +88,19 @@ const spheresBuffer = await getComputeBuffer(gpu, spheresBufferSize, GPUBufferUs
 const quadsBufferSize = (sizes.vec4 * 5) * MAX_QUADS;
 const quadsBuffer = await getComputeBuffer(gpu, quadsBufferSize, GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE);
 
-const boxesBufferSize = (sizes.vec4 * 5) * MAX_BOXES;
+// Caixas e cilindros têm o mesmo layout (5 vec4) e dividem o mesmo buffer:
+// primeiro as caixas, depois os cilindros (o limite é 8 storage buffers por shader).
+const BOX_SIZE_BYTES = sizes.vec4 * 5;
+const boxesBufferSize = BOX_SIZE_BYTES * (MAX_BOXES + MAX_CYLINDERS);
 const boxesBuffer = await getComputeBuffer(gpu, boxesBufferSize, GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE);
 
 const trianglesBufferSize = (sizes.vec4 * 3) * MAX_TRIANGLES;
 const trianglesBuffer = await getComputeBuffer(gpu, trianglesBufferSize, GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE);
 
-const meshesBufferSize = (sizes.vec4 * 7 + 3 * sizes.f32) * MAX_MESHES;
+// No WGSL o struct mesh tem 7 vec4 + 3 f32 = 124 bytes, mas o stride do array
+// é arredondado para 128 bytes (alinhamento de 16). Por isso 32 floats por malha.
+const MESH_STRIDE_FLOATS = 32;
+const meshesBufferSize = MESH_STRIDE_FLOATS * sizes.f32 * MAX_MESHES;
 const meshesBuffer = await getComputeBuffer(gpu, meshesBufferSize, GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE);
 
 const frameBuffers = [{ buffer: frameBuffer, type: "storage" }, { buffer: rayTraceFrameBuffer, type: "storage" }];
@@ -141,6 +152,7 @@ scenesFolder.add({ NewScene: () => {
     boxes = [];
     meshes = [];
     triangles = [];
+    cylinders = [];
     
     generateBackgroundColor([1.0, 1.0, 1.0], [0.5, 0.7, 1.0]);
     writeBuffers();
@@ -308,6 +320,7 @@ function refreshObjectsGUI(startIndex = 0, rebuild = false)
     refreshObjectGUI(sphereTemplate, spheres, objectsFolder, null, startIndex);
     refreshObjectGUI(quadTemplate, quads, objectsFolder, null, startIndex);
     refreshObjectGUI(boxTemplate, boxes, objectsFolder, null, startIndex);
+    refreshObjectGUI(cylinderTemplate, cylinders, objectsFolder, null, startIndex);
     refreshObjectGUI(meshTemplate, meshes, objectsFolder, null, startIndex, false);
 }
 
@@ -410,12 +423,13 @@ function handleAccumulate(accumulate, timeAccumulate = true)
 
 async function getScene(index)
 {
-    let bg1, bg2, focusDistance, focusAngle, sunIntensity, samplesPerPixel, maxBounces;
+    let bg1, bg2, sceneCylinders, focusDistance, focusAngle, sunIntensity, samplesPerPixel, maxBounces;
     ({spheres : spheres, quads : quads, boxes : boxes, 
-        triangles: triangles, meshes: meshes, backgroundColor1 : bg1, 
+        triangles: triangles, meshes: meshes, cylinders: sceneCylinders, backgroundColor1 : bg1, 
         backgroundColor2 : bg2, focusDistance: focusDistance, focusAngle: 
         focusAngle, sunIntensity: sunIntensity, samplesPerPixel: samplesPerPixel, maxBounces: maxBounces} = await getAvailableScene(index, availableScenes));
     
+    cylinders = sceneCylinders ?? [];
     uniforms.focusDistance = focusDistance;
     uniforms.focusAngle = focusAngle;
     uniforms.sunIntensity = sunIntensity;
@@ -447,6 +461,7 @@ function writeUniforms()
     uniforms.boxCount = boxes.length;
     uniforms.trianglesCount = triangles.length;
     uniforms.meshCount = meshes.length;
+    uniforms.cylinderCount = cylinders.length;
     
     var uniformData = new Float32Array(uniformsBufferSize / sizes.f32);
     var offset = 0;
@@ -459,7 +474,7 @@ function writeUniforms()
     gpu.queue.writeBuffer(uniformsBuffer, 0, uniformData);
 }
 
-function writeBuffer(buffer, size, objectList)
+function writeBuffer(buffer, size, objectList, strideFloats = 0, byteOffset = 0)
 {
     if (objectList.length == 0)
     {
@@ -472,6 +487,12 @@ function writeBuffer(buffer, size, objectList)
     var variables = Object.keys(objectList[0]);
     for (let i = 0; i < objectList.length; i++)
     {
+        // Se houver stride fixo (padding do WGSL), começa cada objeto no lugar certo.
+        if (strideFloats > 0)
+        {
+            offset = i * strideFloats;
+        }
+
         for (let j = 1; j < variables.length; j++)
         {
             let lengthOfVariable = 0;
@@ -493,7 +514,7 @@ function writeBuffer(buffer, size, objectList)
         }
     }
 
-    gpu.queue.writeBuffer(buffer, 0, objectData);
+    gpu.queue.writeBuffer(buffer, byteOffset, objectData);
 }
 
 // set the uniforms
@@ -509,7 +530,10 @@ function writeBuffers()
     writeBuffer(boxesBuffer, boxesBufferSize, boxes);
 
     // meshes
-    writeBuffer(meshesBuffer, meshesBufferSize, meshes);
+    writeBuffer(meshesBuffer, meshesBufferSize, meshes, MESH_STRIDE_FLOATS);
+
+    // cylinders (no buffer das caixas, logo após as caixas)
+    writeBuffer(boxesBuffer, BOX_SIZE_BYTES * cylinders.length, cylinders, 0, BOX_SIZE_BYTES * boxes.length);
 
     // triangles
     writeBuffer(trianglesBuffer, trianglesBufferSize, triangles);
